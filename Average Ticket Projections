@@ -1,0 +1,168 @@
+-upper portion is average ticket information, ytd, daily, and last years
+-lower section is python code to create a forecasted daily ticket for the rest of the year
+
+
+with X as (
+select x1.day
+  , x2.tpv as actual
+  , x1.proportion as proportion
+  , x3.goal as goal
+  , (x2.tpv-x3.goal) as difference
+  , last_year_tpv as "2018"
+from 
+  (
+    select
+    x3.date as day
+    , ((x1.proportion*.4)+(x2.proportion*.6)) as proportion
+    , last_year_tpv
+  from
+    (
+      select
+        *,
+        max(tpv) over () as denominator,
+        tpv/denominator as proportion
+
+      from
+      (
+         select distinct day,
+          sum(tpv) over (order by day rows UNBOUNDED PRECEDING) as tpv
+         from 
+          (
+            select 
+              date_trunc('day', convert_timezone('UTC', 'America/Mexico_City', created_at)) as day,
+              sum(amount) as tpv 
+            from clipdw_transaction.payment
+            where status_code = 1 and date_trunc('year', convert_timezone('UTC', 'America/Mexico_City', created_at)) ='2017-01-01'
+            group by 1
+            order by 1
+          )
+      order by 1
+      )
+    ) x1
+     left join 
+    (
+      select
+        *,
+        max(tpv) over () as denominator,
+        tpv/denominator as proportion,
+        tpv as last_year_tpv
+
+      from
+      (
+       select distinct day,
+        sum(tpv) over (order by day rows UNBOUNDED PRECEDING) as tpv
+       from 
+        (
+          select 
+            date_trunc('day', convert_timezone('UTC', 'America/Mexico_City', created_at)) as day,
+            sum(amount) as tpv 
+          from clipdw_transaction.payment
+          where status_code = 1 and date_trunc('year', convert_timezone('UTC', 'America/Mexico_City', created_at)) ='2018-01-01'
+          group by 1
+          order by 1
+        )
+      order by 1
+      )
+    ) x2
+    on datepart('month', x1.day)=datepart('month', x2.day) and datepart('day', x1.day)=datepart('day', x2.day)
+    left join 
+    (
+      select date from dim_calendar
+      where year = 2019
+    ) x3 on datepart('month', x1.day)=datepart('month', x3.date) and datepart('day', x1.day)=datepart('day', x3.date)
+    order by 1 
+  ) x1
+  left join
+  (
+    select distinct day,
+      sum(tpv) over (order by day rows UNBOUNDED PRECEDING) as tpv
+    from 
+    (
+      select 
+        date_trunc('day', convert_timezone('UTC', 'America/Mexico_City', created_at)) as day,
+        sum(amount) as tpv 
+      from clipdw_transaction.payment
+      where status_code = 1 and date_trunc('year', convert_timezone('UTC', 'America/Mexico_City', created_at)) ='2019-01-01'
+        group by 1
+        order by 1
+    )
+    order by 1
+  ) x2 on x1.day=x2.day
+  left join 
+  (
+    select 
+      date
+      , sum(daily_tpv) over (order by date rows unbounded preceding) as goal
+    from
+    (
+      select
+        x1.month
+        , x1.total_tpv::float/max(day) over (partition by x1.month) as daily_tpv
+        , x2.date
+      from [forecast_2019 as x1]
+      left join dim_calendar x2
+        on date_trunc('month', x2.date)=x1.month
+      order by 3
+    )
+  ) x3 on x1.day=x3.date
+  where [x1.day=daterange]
+  order by 1
+)
+
+select
+  day, 
+  actual, 
+  proportion*final as forecast,
+  goal,
+  difference,
+  "2018"
+from X
+left join
+(  
+  select max(actual)/max(proportion) as final
+  from X
+  where actual is not null
+) on actual is null
+
+
+
+
+
+
+
+
+
+### Python Script ###
+import pandas as pd
+import matplotlib.pyplot as plt
+import statsmodels.api as sm
+import itertools
+
+df_original = df
+#df_original = df1.reset_index()
+
+# Set datetime index and y variable
+df['date'] = pd.to_datetime(df['date'])
+df.set_index(df['date'], inplace=True)
+y = df['avg_ticket'][df['avg_ticket'].notnull()]
+
+# Instantiate SARIMA model and fit to data
+mod = sm.tsa.statespace.SARIMAX(y, order=(0,1,1), seasonal_order=(1,1,1,7)
+                                , enforce_stationarity=False
+                                , enforce_invertibility=False
+                               )
+results = mod.fit(disp = -1)
+
+# Forecast 200 months ahead of April 2014
+pred_uc = results.get_forecast(steps=365)
+pred_ci = pred_uc.conf_int()
+df_projection = pd.DataFrame(pred_uc.predicted_mean)
+df_projection = df_projection.reset_index()
+df_projection.columns = ['date','forecast']
+df_projection['date'] = pd.to_datetime(df_projection['date'])
+df_original['date'] = pd.to_datetime(df_original['date'])
+
+df_final = df_original.merge(df_projection
+                             , how='outer', left_on = 'date', right_on = 'date')
+df_final = df_final[df_final['date'].dt.year == 2019]
+periscope.output(df_final)
