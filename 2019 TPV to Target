@@ -1,0 +1,126 @@
+--this chart is meant to creat an actual numbers line,
+--a forecast line for the rest of the year, last years
+--values, and a goal line. The difference between goal and actual
+--is also reported
+
+with X as (
+select x1.day
+  , x2.tpv as actual
+  , x1.proportion as proportion
+  , x3.goal as goal
+  , (x2.tpv-x3.goal) as difference
+  , last_year_tpv as "2018"
+from 
+  (
+    select
+    x3.date as day
+    , ((x1.proportion*.4)+(x2.proportion*.6)) as proportion
+    , last_year_tpv
+  from
+    (
+      select
+        *,
+        max(tpv) over () as denominator,
+        tpv/denominator as proportion
+
+      from
+      (
+         select distinct day,
+          sum(tpv) over (order by day rows UNBOUNDED PRECEDING) as tpv
+         from 
+          (
+            select 
+              date_trunc('day', convert_timezone('UTC', 'America/Mexico_City', created_at)) as day,
+              sum(amount) as tpv 
+            from clipdw_transaction.payment
+            where status_code = 1 and date_trunc('year', convert_timezone('UTC', 'America/Mexico_City', created_at)) ='2017-01-01'
+            group by 1
+            order by 1
+          )
+      order by 1
+      )
+    ) x1
+     left join 
+    (
+      select
+        *,
+        max(tpv) over () as denominator,
+        tpv/denominator as proportion,
+        tpv as last_year_tpv
+
+      from
+      (
+       select distinct day,
+        sum(tpv) over (order by day rows UNBOUNDED PRECEDING) as tpv
+       from 
+        (
+          select 
+            date_trunc('day', convert_timezone('UTC', 'America/Mexico_City', created_at)) as day,
+            sum(amount) as tpv 
+          from clipdw_transaction.payment
+          where status_code = 1 and date_trunc('year', convert_timezone('UTC', 'America/Mexico_City', created_at)) ='2018-01-01'
+          group by 1
+          order by 1
+        )
+      order by 1
+      )
+    ) x2
+    on datepart('month', x1.day)=datepart('month', x2.day) and datepart('day', x1.day)=datepart('day', x2.day)
+    left join 
+    (
+      select date from dim_calendar
+      where year = 2019
+    ) x3 on datepart('month', x1.day)=datepart('month', x3.date) and datepart('day', x1.day)=datepart('day', x3.date)
+    order by 1 
+  ) x1
+  left join
+  (
+    select distinct day,
+      sum(tpv) over (order by day rows UNBOUNDED PRECEDING) as tpv
+    from 
+    (
+      select 
+        date_trunc('day', convert_timezone('UTC', 'America/Mexico_City', created_at)) as day,
+        sum(amount) as tpv 
+      from clipdw_transaction.payment
+      where status_code = 1 and date_trunc('year', convert_timezone('UTC', 'America/Mexico_City', created_at)) ='2019-01-01'
+        group by 1
+        order by 1
+    )
+    order by 1
+  ) x2 on x1.day=x2.day
+  left join 
+  (
+    select 
+      date
+      , sum(daily_tpv) over (order by date rows unbounded preceding) as goal
+    from
+    (
+      select
+        x1.month
+        , x1.total_tpv::float/max(day) over (partition by x1.month) as daily_tpv
+        , x2.date
+      from [forecast_2019 as x1]
+      left join dim_calendar x2
+        on date_trunc('month', x2.date)=x1.month
+      order by 3
+    )
+  ) x3 on x1.day=x3.date
+  where [x1.day=daterange]
+  order by 1
+)
+
+select
+  day, 
+  actual, 
+  proportion*final as forecast,
+  goal,
+  difference,
+  "2018"
+from X
+left join
+(  
+  select max(actual)/max(proportion) as final
+  from X
+  where actual is not null
+) on actual is null
