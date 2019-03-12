@@ -1,0 +1,65 @@
+--This chart builds a model to proect monthly TPV 3 years out
+
+select 
+  date_trunc('month', convert_timezone('UTC', 'America/Mexico_City', c1.created_at)) as month
+  , c3.name as industry
+  , sum(amount) as tpv
+from clipdw_transaction.payment c1
+left join clipdw_provisioning.merchants c2 on c1.merchant_id=c2.id
+left join clipdw_provisioning.industries c3 on c2.industry_id=c3.id
+where date_trunc('month', convert_timezone('UTC', 'America/Mexico_City', c1.created_at)) >= '2015-01-01'
+  and date_trunc('month', convert_timezone('UTC', 'America/Mexico_City', c1.created_at)) < date_trunc('month', convert_timezone('UTC', 'America/Mexico_City', getdate()))
+  and [c3.name=industry]
+group by 1,2
+order by 2,1
+
+
+
+
+
+### Python Script ###
+import pandas as pd
+import matplotlib.pyplot as plt
+import statsmodels.api as sm
+import itertools
+plt.style.use('fivethirtyeight')
+
+# Set datetime index and y variable
+df['Date'] = pd.to_datetime(df['month'])
+df.set_index(df['Date'], inplace=True)
+y = df['tpv']
+
+# Instantiate SARIMA model and fit to data
+mod = sm.tsa.statespace.SARIMAX(y, order=(0,1,1), seasonal_order=(1,1,1,12)
+                                , enforce_stationarity=False
+                                , enforce_invertibility=False
+                               )
+results = mod.fit(disp = -1)
+
+# Forecast 200 months ahead of April 2014
+pred_uc = results.get_forecast(steps=36)
+pred_ci = pred_uc.conf_int()
+
+# results.plot_diagnostics(figsize=(15, 12))
+# plt.show()
+
+# Forecast 200 months ahead of April 2014
+# pred_uc = results.get_forecast(steps=365)
+# pred_ci = pred_uc.conf_int()
+df_projection = pd.DataFrame(pred_uc.predicted_mean)
+df_projection = df_projection.reset_index()
+df_projection.columns = ['Date','forecast']
+df_ci = pd.DataFrame(pred_ci)
+df_ci = df_ci.reset_index()
+df_ci.columns = ['Date', 'Lower tpv forecast', 'Upper tpv forecast']
+df_projection['Date'] = pd.to_datetime(df_projection['Date'])
+df_ci['Date'] = pd.to_datetime(df_ci['Date'])
+# df['month'] = pd.to_datetime(df_original['date'])
+
+df_final = df.merge(df_projection, how='outer', on='Date').merge(df_ci, how='outer', on='Date')
+
+
+
+periscope.output(df_final)
+
+
